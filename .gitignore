@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output files
+output/
+
+# Input files (user data)
+input/*.jpg
+input/*.png
+!input/请把图片放在这里.txt
+
+# OS
+.DS_Store
+Thumbs.db
