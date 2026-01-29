@@ -13,16 +13,28 @@ ENV/
 *.swp
 *.swo
 
-# Output files
-output/
-!output/lens_history.json
-!output/target_history.json
+# Output files (results)
+output/result*.jpg
+output/debug*.jpg
+output/intermediate*.jpg
+output/comparison*.jpg
 
 # Input files (user data)
 input/*.jpg
+input/*.jpeg
 input/*.png
 !input/请把图片放在这里.txt
+
+# 保留 cache 目录及其内容（用于跨电脑共享缓存）
+# cache 目录会被上传到 GitHub
+
+# VBS 启动脚本
+*.vbs
 
 # OS
 .DS_Store
 Thumbs.db
+
+# 旧的历史记录文件（已迁移到 cache 目录）
+output/lens_history.json
+output/target_history.json

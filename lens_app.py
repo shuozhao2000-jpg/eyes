@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import os
 import json
+import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
@@ -17,6 +18,9 @@ class LensApp:
         self.root.geometry("900x650")
         self.root.configure(bg='#2b2b2b')
         
+        # 获取程序所在目录
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        
         # 数据
         self.source_path = None
         self.target_path = None
@@ -28,9 +32,15 @@ class LensApp:
         self.target_points = []  # 模特图圈出的区域（可多个眼睛）
         self.current_target_points = []  # 当前正在画的区域
         
+        # 缓存目录（使用相对路径，可跨电脑使用）
+        self.lens_cache_dir = os.path.join(self.base_dir, 'cache', 'lens')
+        self.target_cache_dir = os.path.join(self.base_dir, 'cache', 'target')
+        os.makedirs(self.lens_cache_dir, exist_ok=True)
+        os.makedirs(self.target_cache_dir, exist_ok=True)
+        
         # 历史记录文件
-        self.history_file = 'output/lens_history.json'
-        self.target_history_file = 'output/target_history.json'
+        self.history_file = os.path.join(self.lens_cache_dir, 'history.json')
+        self.target_history_file = os.path.join(self.target_cache_dir, 'history.json')
         self.lens_history = self.load_history(self.history_file)
         self.target_history = self.load_history(self.target_history_file)
         self.selected_history = None  # 选中的眼部图历史记录
@@ -179,11 +189,29 @@ class LensApp:
             json.dump(history_list, f, ensure_ascii=False, indent=2)
     
     def add_to_history(self, name, points, img_path, is_target=False):
-        """添加新记录"""
+        """添加新记录，将图片复制到缓存目录"""
+        # 确定缓存目录
+        cache_dir = self.target_cache_dir if is_target else self.lens_cache_dir
+        
+        # 生成唯一文件名并复制图片到缓存
+        cached_img_path = ""
+        if img_path and os.path.exists(img_path):
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            ext = os.path.splitext(img_path)[1]
+            cached_filename = f"{name}_{timestamp}{ext}"
+            cached_img_path = os.path.join(cache_dir, cached_filename)
+            try:
+                shutil.copy2(img_path, cached_img_path)
+                # 保存相对路径
+                cached_img_path = os.path.relpath(cached_img_path, self.base_dir)
+            except Exception as e:
+                print(f"复制图片失败: {e}")
+                cached_img_path = ""
+        
         record = {
             'name': name,
             'points': points,
-            'img_path': img_path,
+            'img_path': cached_img_path,  # 使用相对路径
             'time': datetime.now().strftime('%Y-%m-%d %H:%M')
         }
         if is_target:
@@ -226,6 +254,16 @@ class LensApp:
             display = f"{record['name']} ({record['time']})"
             self.target_history_listbox.insert(tk.END, display)
     
+    def get_abs_path(self, rel_path):
+        """将相对路径转换为绝对路径"""
+        if not rel_path:
+            return ""
+        # 如果已经是绝对路径，直接返回
+        if os.path.isabs(rel_path):
+            return rel_path
+        # 转换为绝对路径
+        return os.path.join(self.base_dir, rel_path)
+    
     def on_history_select(self, event):
         """选中眼部图历史记录"""
         selection = self.history_listbox.curselection()
@@ -234,13 +272,19 @@ class LensApp:
             self.selected_history = self.lens_history[idx]
             self.source_points = [list(p) for p in self.selected_history['points']]
             name = self.selected_history['name']
-            # 尝试加载对应的图片
-            img_path = self.selected_history.get('img_path', '')
+            # 尝试加载对应的图片（转换相对路径为绝对路径）
+            img_path = self.get_abs_path(self.selected_history.get('img_path', ''))
             if img_path and os.path.exists(img_path):
                 self.source_img = self.read_image(img_path)
                 self.source_path = img_path
-            self.source_label.config(text=f"✓ {name}", fg='#5cb85c')
-            self.status.config(text=f"已加载眼部图: {name}")
+                self.source_label.config(text=f"✓ {name}", fg='#5cb85c')
+                self.status.config(text=f"已加载眼部图: {name}")
+            else:
+                # 图片路径不存在，需要重新选择图片
+                self.source_img = None
+                self.source_path = None
+                self.source_label.config(text=f"⚠ {name}(需选图)", fg='#f0ad4e')
+                self.status.config(text=f"圈选已加载，但原图片不存在，请重新选择眼部图")
             self.check_ready()
     
     def on_target_history_select(self, event):
@@ -251,8 +295,8 @@ class LensApp:
             self.selected_target_history = self.target_history[idx]
             self.target_points = [[list(p) for p in region] for region in self.selected_target_history['points']]
             name = self.selected_target_history['name']
-            # 尝试加载对应的图片
-            img_path = self.selected_target_history.get('img_path', '')
+            # 尝试加载对应的图片（转换相对路径为绝对路径）
+            img_path = self.get_abs_path(self.selected_target_history.get('img_path', ''))
             if img_path and os.path.exists(img_path):
                 self.target_img = self.read_image(img_path)
                 self.target_path = img_path
@@ -350,13 +394,30 @@ class LensApp:
     
     def check_ready(self):
         """检查是否可以开始"""
-        # 需要有眼部图或历史记录，并且有模特图或历史记录
-        has_source = self.source_path or len(self.source_points) > 0
-        has_target = self.target_path or len(self.target_points) > 0
+        # 需要有眼部图（图片+圈选点）和模特图（图片+圈选点）
+        # 如果有圈选点但没有图片，需要重新选择图片
+        has_source_img = self.source_img is not None or self.source_path is not None
+        has_source_points = len(self.source_points) > 0
+        has_target_img = self.target_img is not None or self.target_path is not None
+        has_target_points = len(self.target_points) > 0
         
-        if has_source and has_target:
+        # 眼部图：需要图片（或者有圈选点时可以后续选图）
+        source_ready = has_source_img or has_source_points
+        # 模特图：需要图片（或者有圈选点时可以后续选图）
+        target_ready = has_target_img or has_target_points
+        
+        if source_ready and target_ready:
             self.btn_start.config(state='normal')
-            self.status.config(text="点击「开始替换」进行下一步")
+            # 检查是否需要补充选择图片
+            warnings = []
+            if has_source_points and not has_source_img:
+                warnings.append("眼部图")
+            if has_target_points and not has_target_img:
+                warnings.append("模特图")
+            if warnings:
+                self.status.config(text=f"请重新选择{'/'.join(warnings)}，然后点击「开始替换」")
+            else:
+                self.status.config(text="点击「开始替换」进行下一步")
         else:
             self.btn_start.config(state='disabled')
     
@@ -364,9 +425,16 @@ class LensApp:
         """开始处理流程"""
         self.root.withdraw()  # 隐藏主窗口
         
+        # 如果从眼部图历史记录加载，需要加载对应的图片
+        if self.selected_history and self.source_img is None:
+            img_path = self.get_abs_path(self.selected_history.get('img_path', ''))
+            if img_path and os.path.exists(img_path):
+                self.source_img = self.read_image(img_path)
+                self.source_path = img_path
+        
         # 如果从模特图历史记录加载，需要加载对应的图片
         if self.selected_target_history and self.target_img is None:
-            img_path = self.selected_target_history.get('img_path', '')
+            img_path = self.get_abs_path(self.selected_target_history.get('img_path', ''))
             if img_path and os.path.exists(img_path):
                 self.target_img = self.read_image(img_path)
                 self.target_path = img_path
@@ -410,6 +478,15 @@ class LensApp:
             
             # 显示结果
             self.show_result(result, output_path)
+            
+            # 重置模特图数据，准备下次使用
+            self.target_points = []
+            self.target_img = None
+            self.target_path = None
+            self.selected_target_history = None
+            self.target_label.config(text="未选择", fg='#888888')
+            self.btn_start.config(state='disabled')
+            self.status.config(text="已完成！请选择新的模特图继续")
         
         self.root.deiconify()
     
@@ -419,7 +496,18 @@ class LensApp:
         h, w = img.shape[:2]
         self.source_points = []
         
-        view_scale = [min(800 / w, 600 / h, 1.0)]
+        # 获取屏幕尺寸，让图片自动填满屏幕
+        try:
+            from ctypes import windll
+            user32 = windll.user32
+            screen_w = [user32.GetSystemMetrics(0) - 100]
+            screen_h = [user32.GetSystemMetrics(1) - 150]
+        except:
+            screen_w = [1820]
+            screen_h = [930]
+        
+        # 计算填满屏幕的缩放比例
+        view_scale = [min(screen_w[0] / w, screen_h[0] / h)]
         offset_x, offset_y = [0], [0]
         drawing = [False]
         dragging = [False]
@@ -432,6 +520,9 @@ class LensApp:
         circle_center = [0, 0]
         circle_radius = [0]
         gap_angle = [60]  # 上方豁口角度（度）
+        append_mode = [False]  # 追加模式：新画的线追加到已有区域
+        erase_mode = [False]  # 擦除模式：删除附近的点
+        erase_radius = [15]  # 擦除半径
         
         def mouse_cb(event, x, y, flags, param):
             ox = int((x - offset_x[0]) / view_scale[0])
@@ -439,7 +530,10 @@ class LensApp:
             
             if event == cv2.EVENT_LBUTTONDOWN:
                 drawing[0] = True
-                if circle_mode[0]:
+                if erase_mode[0]:
+                    # 擦除模式：删除附近的点
+                    pass
+                elif circle_mode[0]:
                     circle_center[0], circle_center[1] = ox, oy
                     circle_radius[0] = 0
                 else:
@@ -447,7 +541,13 @@ class LensApp:
                     current_points.append([ox, oy])
             elif event == cv2.EVENT_MOUSEMOVE:
                 if drawing[0]:
-                    if circle_mode[0]:
+                    if erase_mode[0]:
+                        # 擦除模式：删除鼠标附近的点
+                        if len(self.source_points) > 0:
+                            r = erase_radius[0]
+                            self.source_points = [p for p in self.source_points 
+                                                  if (p[0]-ox)**2 + (p[1]-oy)**2 > r*r]
+                    elif circle_mode[0]:
                         dx, dy = ox - circle_center[0], oy - circle_center[1]
                         circle_radius[0] = int(np.sqrt(dx*dx + dy*dy))
                     else:
@@ -476,9 +576,18 @@ class LensApp:
                         px = int(circle_center[0] + circle_radius[0] * np.cos(a))
                         py = int(circle_center[1] + circle_radius[0] * np.sin(a))
                         pts.append([px, py])
-                    self.source_points = pts
+                    if append_mode[0] and len(self.source_points) > 0:
+                        self.source_points.extend(pts)
+                    else:
+                        self.source_points = pts
+                    circle_radius[0] = 0
                 elif len(current_points) > 10:
-                    self.source_points = current_points.copy()
+                    if append_mode[0] and len(self.source_points) > 0:
+                        # 追加到已有区域
+                        self.source_points.extend(current_points.copy())
+                    else:
+                        self.source_points = current_points.copy()
+                current_points.clear()
             elif event == cv2.EVENT_RBUTTONDOWN:
                 dragging[0] = True
                 drag_start[0] = x - offset_x[0]
@@ -523,7 +632,8 @@ class LensApp:
             
             scaled = cv2.resize(disp, (int(w * view_scale[0]), int(h * view_scale[0])))
             
-            canvas_h, canvas_w = 700, 900
+            # 获取屏幕尺寸，使用大画布
+            canvas_h, canvas_w = screen_h[0], screen_w[0]
             canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
             canvas[:] = (40, 40, 40)
             
@@ -539,15 +649,28 @@ class LensApp:
             if src_x2 > src_x1 and src_y2 > src_y1:
                 canvas[dst_y1:dst_y2, dst_x1:dst_x2] = scaled[src_y1:src_y2, src_x1:src_x2]
             
-            mode_str = "CIRCLE(gap)" if circle_mode[0] else "FREE"
-            cv2.putText(canvas, f"Mode: {mode_str} | Middle: Move | Scroll: Resize", 
-                       (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-            cv2.putText(canvas, f"[O] Switch  [G] Gap:{gap_angle[0]}  [+/-] Line  [SPACE] OK", 
-                       (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            if erase_mode[0]:
+                mode_str = f"ERASE (r={erase_radius[0]})"
+                color = (0, 0, 255)  # 红色表示擦除模式
+            elif circle_mode[0]:
+                mode_str = "CIRCLE"
+                color = (0, 255, 0)  # 绿色
+            elif append_mode[0]:
+                mode_str = "APPEND"
+                color = (0, 255, 0)  # 绿色
+            else:
+                mode_str = "FREE"
+                color = (0, 255, 0)  # 绿色
+            cv2.putText(canvas, f"Mode: {mode_str} | Points: {len(self.source_points)} | [F] Fullscreen", 
+                       (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+            cv2.putText(canvas, f"[O] Circle [A] Append [E] Erase [G] Gap:{gap_angle[0]} [+/-] Size [SPACE] OK", 
+                       (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             return canvas
         
+        fullscreen = [False]
         win = 'Step1: Draw Lens Area'
-        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win, screen_w[0], screen_h[0])
         cv2.setMouseCallback(win, mouse_cb)
         
         while True:
@@ -575,19 +698,44 @@ class LensApp:
                 view_scale[0] = min(10.0, view_scale[0] + 0.2)
             elif k == ord('x') or k == ord('X'):
                 view_scale[0] = max(0.2, view_scale[0] - 0.2)
-            elif k == ord('+') or k == ord('='):  # 加粗
-                line_width[0] = min(20, line_width[0] + 1)
-            elif k == ord('-') or k == ord('_'):  # 减细
-                line_width[0] = max(1, line_width[0] - 1)
+            elif k == ord('+') or k == ord('='):  # 加粗/增大擦除半径
+                if erase_mode[0]:
+                    erase_radius[0] = min(100, erase_radius[0] + 5)
+                else:
+                    line_width[0] = min(20, line_width[0] + 1)
+            elif k == ord('-') or k == ord('_'):  # 减细/减小擦除半径
+                if erase_mode[0]:
+                    erase_radius[0] = max(5, erase_radius[0] - 5)
+                else:
+                    line_width[0] = max(1, line_width[0] - 1)
             elif k == ord('o') or k == ord('O'):  # 切换圆形模式
                 circle_mode[0] = not circle_mode[0]
+                if circle_mode[0]:
+                    append_mode[0] = False
+                    erase_mode[0] = False
+            elif k == ord('a') or k == ord('A'):  # 切换追加模式
+                append_mode[0] = not append_mode[0]
+                if append_mode[0]:
+                    circle_mode[0] = False
+                    erase_mode[0] = False
+            elif k == ord('e') or k == ord('E'):  # 切换擦除模式
+                erase_mode[0] = not erase_mode[0]
+                if erase_mode[0]:
+                    circle_mode[0] = False
+                    append_mode[0] = False
             elif k == ord('g') or k == ord('G'):  # 调节豁口角度
                 gap_angle[0] = (gap_angle[0] + 20) % 180  # 0-160度循环
                 if gap_angle[0] < 20:
                     gap_angle[0] = 20
             elif k == ord('r') or k == ord('R'):  # 重置视图
                 offset_x[0], offset_y[0] = 0, 0
-                view_scale[0] = min(800 / w, 600 / h, 1.0)
+                view_scale[0] = min(screen_w[0] / w, screen_h[0] / h)
+            elif k == ord('f') or k == ord('F'):  # 切换全屏
+                fullscreen[0] = not fullscreen[0]
+                if fullscreen[0]:
+                    cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                else:
+                    cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
     
     def locate_target(self):
         """定位模特图 - 用画笔圈出眼睛区域（可画多个）"""
@@ -595,7 +743,18 @@ class LensApp:
         h, w = img.shape[:2]
         self.target_points = []
         
-        view_scale = [min(900 / w, 700 / h, 1.0)]
+        # 获取屏幕尺寸，让图片自动填满屏幕
+        try:
+            from ctypes import windll
+            user32 = windll.user32
+            screen_w = [user32.GetSystemMetrics(0) - 100]
+            screen_h = [user32.GetSystemMetrics(1) - 150]
+        except:
+            screen_w = [1820]
+            screen_h = [930]
+        
+        # 计算填满屏幕的缩放比例
+        view_scale = [min(screen_w[0] / w, screen_h[0] / h)]
         offset_x, offset_y = [0], [0]
         drawing = [False]
         dragging = [False]
@@ -609,6 +768,8 @@ class LensApp:
         circle_radius = [0]
         gap_angle = [60]
         append_mode = [False]  # 追加模式：新画的线追加到上一个区域
+        erase_mode = [False]  # 擦除模式
+        erase_radius = [15]  # 擦除半径
         
         def mouse_cb(event, x, y, flags, param):
             ox = int((x - offset_x[0]) / view_scale[0])
@@ -616,7 +777,9 @@ class LensApp:
             
             if event == cv2.EVENT_LBUTTONDOWN:
                 drawing[0] = True
-                if circle_mode[0]:
+                if erase_mode[0]:
+                    pass
+                elif circle_mode[0]:
                     circle_center[0], circle_center[1] = ox, oy
                     circle_radius[0] = 0
                 else:
@@ -624,7 +787,13 @@ class LensApp:
                     current_points.append([ox, oy])
             elif event == cv2.EVENT_MOUSEMOVE:
                 if drawing[0]:
-                    if circle_mode[0]:
+                    if erase_mode[0]:
+                        # 擦除最后一个区域中附近的点
+                        if len(self.target_points) > 0:
+                            r = erase_radius[0]
+                            self.target_points[-1] = [p for p in self.target_points[-1] 
+                                                      if (p[0]-ox)**2 + (p[1]-oy)**2 > r*r]
+                    elif circle_mode[0]:
                         dx, dy = ox - circle_center[0], oy - circle_center[1]
                         circle_radius[0] = int(np.sqrt(dx*dx + dy*dy))
                     else:
@@ -700,14 +869,15 @@ class LensApp:
                 if len(region) > 1:
                     pts = np.array(region, dtype=np.int32)
                     cv2.polylines(disp, [pts], False, (0, 255, 0), lw)  # 不闭合
-                    cx = sum(p[0] for p in region) // len(region)
-                    cy = sum(p[1] for p in region) // len(region)
-                    cv2.putText(disp, str(i+1), (cx-10, cy+10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    # 在左上角显示小编号
+                    x, y, rw, rh = cv2.boundingRect(pts)
+                    cv2.putText(disp, str(i+1), (x-15, y-5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             
             scaled = cv2.resize(disp, (int(w * view_scale[0]), int(h * view_scale[0])))
             
-            canvas_h, canvas_w = 750, 1000
+            # 使用大画布
+            canvas_h, canvas_w = screen_h[0], screen_w[0]
             canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
             canvas[:] = (40, 40, 40)
             
@@ -723,16 +893,28 @@ class LensApp:
             if src_x2 > src_x1 and src_y2 > src_y1:
                 canvas[dst_y1:dst_y2, dst_x1:dst_x2] = scaled[src_y1:src_y2, src_x1:src_x2]
             
-            mode_str = "CIRCLE" if circle_mode[0] else ("APPEND" if append_mode[0] else "FREE")
-            color = (0, 255, 0) if append_mode[0] else (0, 255, 255)
-            cv2.putText(canvas, f"Eyes: {len(self.target_points)} | Mode: {mode_str} | Middle: Move | Scroll: Resize", 
+            if erase_mode[0]:
+                mode_str = f"ERASE (r={erase_radius[0]})"
+                color = (0, 0, 255)  # 红色表示擦除模式
+            elif circle_mode[0]:
+                mode_str = "CIRCLE"
+                color = (0, 255, 0)  # 绿色
+            elif append_mode[0]:
+                mode_str = "APPEND"
+                color = (0, 255, 0)  # 绿色
+            else:
+                mode_str = "FREE"
+                color = (0, 255, 0)  # 绿色
+            cv2.putText(canvas, f"Eyes: {len(self.target_points)} | Mode: {mode_str} | [F] Fullscreen", 
                        (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
-            cv2.putText(canvas, f"[O] Circle  [A] Append  [G] Gap:{gap_angle[0]}  [U] Undo  [SPACE] OK", 
-                       (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            cv2.putText(canvas, f"[O] Circle [A] Append [E] Erase [G] Gap:{gap_angle[0]} [U] Undo [+/-] Size [SPACE] OK", 
+                       (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             return canvas
         
+        fullscreen = [False]
         win = 'Step2: Draw Eye Areas'
-        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win, screen_w[0], screen_h[0])
         cv2.setMouseCallback(win, mouse_cb)
         
         while True:
@@ -763,29 +945,57 @@ class LensApp:
                 view_scale[0] = min(10.0, view_scale[0] + 0.2)
             elif k == ord('x') or k == ord('X'):
                 view_scale[0] = max(0.2, view_scale[0] - 0.2)
-            elif k == ord('+') or k == ord('='):  # 加粗
-                line_width[0] = min(20, line_width[0] + 1)
-            elif k == ord('-') or k == ord('_'):  # 减细
-                line_width[0] = max(1, line_width[0] - 1)
+            elif k == ord('+') or k == ord('='):  # 加粗/增大擦除半径
+                if erase_mode[0]:
+                    erase_radius[0] = min(100, erase_radius[0] + 5)
+                else:
+                    line_width[0] = min(20, line_width[0] + 1)
+            elif k == ord('-') or k == ord('_'):  # 减细/减小擦除半径
+                if erase_mode[0]:
+                    erase_radius[0] = max(5, erase_radius[0] - 5)
+                else:
+                    line_width[0] = max(1, line_width[0] - 1)
             elif k == ord('o') or k == ord('O'):  # 切换圆形模式
                 circle_mode[0] = not circle_mode[0]
                 if circle_mode[0]:
-                    append_mode[0] = False  # 圆形模式下关闭追加
+                    append_mode[0] = False
+                    erase_mode[0] = False
             elif k == ord('a') or k == ord('A'):  # 切换追加模式
                 append_mode[0] = not append_mode[0]
                 if append_mode[0]:
-                    circle_mode[0] = False  # 追加模式下关闭圆形
+                    circle_mode[0] = False
+                    erase_mode[0] = False
+            elif k == ord('e') or k == ord('E'):  # 切换擦除模式
+                erase_mode[0] = not erase_mode[0]
+                if erase_mode[0]:
+                    circle_mode[0] = False
+                    append_mode[0] = False
             elif k == ord('g') or k == ord('G'):  # 调节豁口角度
                 gap_angle[0] = (gap_angle[0] + 20) % 180
                 if gap_angle[0] < 20:
                     gap_angle[0] = 20
             elif k == ord('r') or k == ord('R'):  # 重置视图
                 offset_x[0], offset_y[0] = 0, 0
-                view_scale[0] = min(900 / w, 700 / h, 1.0)
+                view_scale[0] = min(screen_w[0] / w, screen_h[0] / h)
+            elif k == ord('f') or k == ord('F'):  # 切换全屏
+                fullscreen[0] = not fullscreen[0]
+                if fullscreen[0]:
+                    cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                else:
+                    cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
     
     def process(self):
         """处理并生成结果 - 使用画笔圈选的区域"""
         if len(self.source_points) < 10 or len(self.target_points) == 0:
+            messagebox.showerror("错误", "请先完成圈选操作")
+            return None
+        
+        # 检查图片是否已加载
+        if self.source_img is None:
+            messagebox.showerror("错误", "眼部图未加载，请重新选择眼部图")
+            return None
+        if self.target_img is None:
+            messagebox.showerror("错误", "模特图未加载，请重新选择模特图")
             return None
         
         # 从源图圈选区域提取纹理
