@@ -28,7 +28,11 @@ class LensApp:
         self.target_img = None
         
         # 定位参数 - 画笔圈出的点
-        self.source_points = []  # 眼部图圈出的区域
+        self.source_points = []
+        
+        # 标记是否是新圈选的（用于在预览后询问保存）
+        self.source_is_new = False
+        self.target_is_new = False  # 眼部图圈出的区域
         self.target_points = []  # 模特图圈出的区域（可多个眼睛）
         self.current_target_points = []  # 当前正在画的区域
         
@@ -42,11 +46,15 @@ class LensApp:
         self.history_file = os.path.join(self.lens_cache_dir, 'history.json')
         self.target_history_file = os.path.join(self.target_cache_dir, 'history.json')
         
-        # 迁移旧的历史记录
+        # 迁移旧的历史记录（只迁移一次）
         self.migrate_old_history()
         
+        # 加载历史记录
         self.lens_history = self.load_history(self.history_file)
         self.target_history = self.load_history(self.target_history_file)
+        
+        # 更新绝对路径为相对路径（在加载后执行）
+        self._update_history_paths()
         self.selected_history = None  # 选中的眼部图历史记录
         self.selected_target_history = None  # 选中的模特图历史记录
         
@@ -76,11 +84,20 @@ class LensApp:
                                      width=18, height=3)
         self.source_label.pack(pady=3)
         
-        tk.Button(left1, text="选择新眼部图", 
-                  font=("Microsoft YaHei", 10),
+        btn_frame1 = tk.Frame(left1, bg='#3c3c3c')
+        btn_frame1.pack(pady=3)
+        
+        tk.Button(btn_frame1, text="选择图片", 
+                  font=("Microsoft YaHei", 9),
                   command=self.select_source,
                   bg='#4a90d9', fg='white',
-                  width=14).pack(pady=3)
+                  width=8).pack(side='left', padx=2)
+        
+        tk.Button(btn_frame1, text="圈选定位", 
+                  font=("Microsoft YaHei", 9),
+                  command=self.manual_locate_source,
+                  bg='#f0ad4e', fg='white',
+                  width=8).pack(side='left', padx=2)
         
         # 右侧 - 眼部图历史记录
         right1 = tk.LabelFrame(row1, text="📋 眼部图历史（点击使用）", 
@@ -125,11 +142,20 @@ class LensApp:
                                      width=18, height=3)
         self.target_label.pack(pady=3)
         
-        tk.Button(left2, text="选择模特图", 
-                  font=("Microsoft YaHei", 10),
+        btn_frame2 = tk.Frame(left2, bg='#3c3c3c')
+        btn_frame2.pack(pady=3)
+        
+        tk.Button(btn_frame2, text="选择图片", 
+                  font=("Microsoft YaHei", 9),
                   command=self.select_target,
                   bg='#4a90d9', fg='white',
-                  width=14).pack(pady=3)
+                  width=8).pack(side='left', padx=2)
+        
+        tk.Button(btn_frame2, text="圈选定位", 
+                  font=("Microsoft YaHei", 9),
+                  command=self.manual_locate_target,
+                  bg='#f0ad4e', fg='white',
+                  width=8).pack(side='left', padx=2)
         
         # 右侧 - 模特图历史记录
         right2 = tk.LabelFrame(row2, text="📋 模特图历史（点击使用）", 
@@ -215,57 +241,86 @@ class LensApp:
                 
                 new_history.append(record)
             
-            # 保存更新后的历史记录
+            # 合并新旧记录（保留新文件中的记录）
+            existing_history = []
+            if os.path.exists(new_file):
+                try:
+                    with open(new_file, 'r', encoding='utf-8') as f:
+                        existing_history = json.load(f)
+                except:
+                    pass
+            
+            # 合并：新记录在前，旧记录（不重复的）在后
+            existing_names = {r.get('name', '') for r in existing_history}
+            for record in new_history:
+                if record.get('name', '') not in existing_names:
+                    existing_history.append(record)
+            
+            # 保存合并后的历史记录
             with open(new_file, 'w', encoding='utf-8') as f:
-                json.dump(new_history, f, ensure_ascii=False, indent=2)
+                json.dump(existing_history, f, ensure_ascii=False, indent=2)
             print(f"已迁移历史记录到: {new_file}")
+            
+            # 删除旧文件，避免重复迁移
+            try:
+                os.remove(old_file)
+                print(f"已删除旧历史文件: {old_file}")
+            except:
+                pass
         
         # 迁移眼部图历史
         migrate_with_images(old_lens_file, self.history_file, self.lens_cache_dir, False)
         
         # 迁移模特图历史  
         migrate_with_images(old_target_file, self.target_history_file, self.target_cache_dir, True)
-        
-        # 检查现有的历史记录，如果有绝对路径的图片也复制过来
-        self._update_existing_history()
     
-    def _update_existing_history(self):
-        """更新现有历史记录中的绝对路径图片"""
-        def update_history_file(history_file, cache_dir):
-            if not os.path.exists(history_file):
-                return
-            
-            try:
-                with open(history_file, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except:
-                return
-            
-            updated = False
-            for record in history:
-                img_path = record.get('img_path', '')
-                
-                # 如果是绝对路径且文件存在，复制到缓存目录
-                if img_path and os.path.isabs(img_path) and os.path.exists(img_path):
-                    try:
-                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-                        ext = os.path.splitext(img_path)[1]
-                        name = record.get('name', 'img')
-                        cached_filename = f"{name}_{timestamp}{ext}"
-                        cached_path = os.path.join(cache_dir, cached_filename)
-                        shutil.copy2(img_path, cached_path)
-                        record['img_path'] = os.path.relpath(cached_path, self.base_dir)
-                        updated = True
-                        print(f"已更新图片路径: {os.path.basename(img_path)}")
-                    except Exception as e:
-                        print(f"更新图片路径失败: {e}")
-            
-            if updated:
-                with open(history_file, 'w', encoding='utf-8') as f:
-                    json.dump(history, f, ensure_ascii=False, indent=2)
+    def _update_history_paths(self):
+        """更新内存中历史记录的绝对路径为相对路径"""
+        def find_cached_image(cache_dir, name):
+            """在缓存目录中查找与name匹配的图片"""
+            if not os.path.exists(cache_dir):
+                return None
+            for filename in os.listdir(cache_dir):
+                if filename.startswith(name + '_') and not filename.endswith('.json'):
+                    return os.path.join(cache_dir, filename)
+            return None
         
-        update_history_file(self.history_file, self.lens_cache_dir)
-        update_history_file(self.target_history_file, self.target_cache_dir)
+        def update_list(history_list, cache_dir):
+            updated = False
+            for record in history_list:
+                img_path = record.get('img_path', '')
+                name = record.get('name', 'img')
+                
+                if img_path and os.path.isabs(img_path):
+                    if os.path.exists(img_path):
+                        # 绝对路径存在，复制到缓存
+                        try:
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                            ext = os.path.splitext(img_path)[1]
+                            cached_filename = f"{name}_{timestamp}{ext}"
+                            cached_path = os.path.join(cache_dir, cached_filename)
+                            shutil.copy2(img_path, cached_path)
+                            record['img_path'] = os.path.relpath(cached_path, self.base_dir)
+                            updated = True
+                            print(f"已关联缓存图片: {name}")
+                        except Exception as e:
+                            print(f"复制失败: {e}")
+                    else:
+                        # 绝对路径不存在，查找缓存中的图片
+                        cached_img = find_cached_image(cache_dir, name)
+                        if cached_img:
+                            record['img_path'] = os.path.relpath(cached_img, self.base_dir)
+                            updated = True
+                            print(f"已关联缓存图片: {name}")
+            return updated
+        
+        # 更新眼部图历史
+        if update_list(self.lens_history, self.lens_cache_dir):
+            self.save_history(self.lens_history, self.history_file)
+        
+        # 更新模特图历史
+        if update_list(self.target_history, self.target_cache_dir):
+            self.save_history(self.target_history, self.target_history_file)
     
     def load_history(self, filepath):
         """加载历史记录"""
@@ -280,8 +335,12 @@ class LensApp:
     def save_history(self, history_list, filepath):
         """保存历史记录"""
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(history_list, f, ensure_ascii=False, indent=2)
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(history_list, f, ensure_ascii=False, indent=2)
+            print(f"[保存成功] {filepath} - {len(history_list)}条记录")
+        except Exception as e:
+            print(f"[保存失败] {filepath}: {e}")
     
     def add_to_history(self, name, points, img_path, is_target=False):
         """添加新记录，将图片复制到缓存目录"""
@@ -309,6 +368,7 @@ class LensApp:
             'img_path': cached_img_path,  # 使用相对路径
             'time': datetime.now().strftime('%Y-%m-%d %H:%M')
         }
+        print(f"[添加记录] name={name}, img_path={cached_img_path}, is_target={is_target}")
         if is_target:
             self.target_history.insert(0, record)
             if len(self.target_history) > 20:
@@ -487,6 +547,70 @@ class LensApp:
             self.target_label.config(text=f"✓ {filename}", fg='#5cb85c')
             self.check_ready()
     
+    def manual_locate_source(self):
+        """手动圈选眼部图"""
+        # 如果还没有图片，先让用户选择
+        if self.source_img is None:
+            if self.source_path:
+                self.source_img = self.read_image(self.source_path)
+            else:
+                # 尝试从历史记录加载
+                if self.selected_history:
+                    img_path = self.get_abs_path(self.selected_history.get('img_path', ''))
+                    if img_path and os.path.exists(img_path):
+                        self.source_img = self.read_image(img_path)
+                        self.source_path = img_path
+        
+        if self.source_img is None:
+            messagebox.showwarning("提示", "请先选择眼部图或从历史记录中选择")
+            return
+        
+        # 清空现有圈选点，重新圈选
+        self.source_points = []
+        self.source_is_new = True
+        self.root.withdraw()
+        
+        if self.locate_source():
+            self.status.config(text="眼部图圈选完成！")
+            # 圈选完成后询问是否保存
+            self.ask_save_history()
+            self.source_is_new = False
+        
+        self.root.deiconify()
+        self.check_ready()
+    
+    def manual_locate_target(self):
+        """手动圈选模特图"""
+        # 如果还没有图片，先让用户选择
+        if self.target_img is None:
+            if self.target_path:
+                self.target_img = self.read_image(self.target_path)
+            else:
+                # 尝试从历史记录加载
+                if self.selected_target_history:
+                    img_path = self.get_abs_path(self.selected_target_history.get('img_path', ''))
+                    if img_path and os.path.exists(img_path):
+                        self.target_img = self.read_image(img_path)
+                        self.target_path = img_path
+        
+        if self.target_img is None:
+            messagebox.showwarning("提示", "请先选择模特图或从历史记录中选择")
+            return
+        
+        # 清空现有圈选点，重新圈选
+        self.target_points = []
+        self.target_is_new = True
+        self.root.withdraw()
+        
+        if self.locate_target():
+            self.status.config(text="模特图圈选完成！")
+            # 圈选完成后询问是否保存
+            self.ask_save_target_history()
+            self.target_is_new = False
+        
+        self.root.deiconify()
+        self.check_ready()
+    
     def check_ready(self):
         """检查是否可以开始"""
         # 需要有眼部图（图片+圈选点）和模特图（图片+圈选点）
@@ -574,6 +698,14 @@ class LensApp:
             # 显示结果
             self.show_result(result, output_path)
             
+            # 预览后询问是否保存新圈选的内容到历史记录
+            if self.source_is_new:
+                self.ask_save_history()
+                self.source_is_new = False
+            if self.target_is_new:
+                self.ask_save_target_history()
+                self.target_is_new = False
+            
             # 重置模特图数据，准备下次使用
             self.target_points = []
             self.target_img = None
@@ -610,14 +742,14 @@ class LensApp:
         drag_start = [0, 0]
         move_start = [0, 0]
         current_points = []
-        line_width = [3]
-        circle_mode = [False]
+        line_width = [1]  # 默认最细
+        circle_mode = [True]  # 默认圆形模式
         circle_center = [0, 0]
         circle_radius = [0]
         gap_angle = [60]  # 上方豁口角度（度）
         append_mode = [False]  # 追加模式：新画的线追加到已有区域
         erase_mode = [False]  # 擦除模式：删除附近的点
-        erase_radius = [15]  # 擦除半径
+        erase_radius = [5]  # 擦除半径（默认最小）
         
         def mouse_cb(event, x, y, flags, param):
             ox = int((x - offset_x[0]) / view_scale[0])
@@ -779,8 +911,8 @@ class LensApp:
             if k == 32:  # SPACE
                 if len(self.source_points) > 10:
                     cv2.destroyAllWindows()
-                    # 询问是否保存到历史记录
-                    self.ask_save_history()
+                    # 标记为新圈选，在预览后询问是否保存
+                    self.source_is_new = True
                     return True
             elif k == 27 or k == ord('q'):  # ESC
                 cv2.destroyAllWindows()
@@ -857,14 +989,14 @@ class LensApp:
         drag_start = [0, 0]
         move_start = [0, 0]
         current_points = []
-        line_width = [3]
-        circle_mode = [False]
+        line_width = [1]  # 默认最细
+        circle_mode = [True]  # 默认圆形模式
         circle_center = [0, 0]
         circle_radius = [0]
         gap_angle = [60]
         append_mode = [False]  # 追加模式：新画的线追加到上一个区域
         erase_mode = [False]  # 擦除模式
-        erase_radius = [15]  # 擦除半径
+        erase_radius = [5]  # 擦除半径（默认最小）
         
         def mouse_cb(event, x, y, flags, param):
             ox = int((x - offset_x[0]) / view_scale[0])
@@ -1023,8 +1155,8 @@ class LensApp:
             if k == 32:  # SPACE
                 if len(self.target_points) > 0:
                     cv2.destroyAllWindows()
-                    # 询问是否保存到历史记录
-                    self.ask_save_target_history()
+                    # 标记为新圈选，在预览后询问是否保存
+                    self.target_is_new = True
                     return True
             elif k == 27 or k == ord('q'):  # ESC
                 cv2.destroyAllWindows()
