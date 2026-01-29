@@ -41,6 +41,10 @@ class LensApp:
         # 历史记录文件
         self.history_file = os.path.join(self.lens_cache_dir, 'history.json')
         self.target_history_file = os.path.join(self.target_cache_dir, 'history.json')
+        
+        # 迁移旧的历史记录
+        self.migrate_old_history()
+        
         self.lens_history = self.load_history(self.history_file)
         self.target_history = self.load_history(self.target_history_file)
         self.selected_history = None  # 选中的眼部图历史记录
@@ -171,6 +175,97 @@ class LensApp:
                                font=("Microsoft YaHei", 10),
                                fg='#888888', bg='#2b2b2b')
         self.status.pack(side='bottom', pady=8)
+    
+    def migrate_old_history(self):
+        """迁移旧的历史记录到新位置，并复制图片到缓存目录"""
+        # 旧的历史记录文件路径
+        old_lens_file = os.path.join(self.base_dir, 'output', 'lens_history.json')
+        old_target_file = os.path.join(self.base_dir, 'output', 'target_history.json')
+        
+        def migrate_with_images(old_file, new_file, cache_dir, is_target=False):
+            """迁移历史记录并复制图片"""
+            if not os.path.exists(old_file):
+                return
+            
+            try:
+                with open(old_file, 'r', encoding='utf-8') as f:
+                    old_history = json.load(f)
+            except:
+                return
+            
+            # 检查是否需要迁移（新文件不存在或需要更新图片路径）
+            new_history = []
+            for record in old_history:
+                img_path = record.get('img_path', '')
+                
+                # 如果是绝对路径且文件存在，复制到缓存目录
+                if img_path and os.path.isabs(img_path) and os.path.exists(img_path):
+                    try:
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                        ext = os.path.splitext(img_path)[1]
+                        name = record.get('name', 'img')
+                        cached_filename = f"{name}_{timestamp}{ext}"
+                        cached_path = os.path.join(cache_dir, cached_filename)
+                        shutil.copy2(img_path, cached_path)
+                        # 更新为相对路径
+                        record['img_path'] = os.path.relpath(cached_path, self.base_dir)
+                        print(f"已复制图片: {os.path.basename(img_path)} -> {cached_filename}")
+                    except Exception as e:
+                        print(f"复制图片失败: {e}")
+                
+                new_history.append(record)
+            
+            # 保存更新后的历史记录
+            with open(new_file, 'w', encoding='utf-8') as f:
+                json.dump(new_history, f, ensure_ascii=False, indent=2)
+            print(f"已迁移历史记录到: {new_file}")
+        
+        # 迁移眼部图历史
+        migrate_with_images(old_lens_file, self.history_file, self.lens_cache_dir, False)
+        
+        # 迁移模特图历史  
+        migrate_with_images(old_target_file, self.target_history_file, self.target_cache_dir, True)
+        
+        # 检查现有的历史记录，如果有绝对路径的图片也复制过来
+        self._update_existing_history()
+    
+    def _update_existing_history(self):
+        """更新现有历史记录中的绝对路径图片"""
+        def update_history_file(history_file, cache_dir):
+            if not os.path.exists(history_file):
+                return
+            
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+            except:
+                return
+            
+            updated = False
+            for record in history:
+                img_path = record.get('img_path', '')
+                
+                # 如果是绝对路径且文件存在，复制到缓存目录
+                if img_path and os.path.isabs(img_path) and os.path.exists(img_path):
+                    try:
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                        ext = os.path.splitext(img_path)[1]
+                        name = record.get('name', 'img')
+                        cached_filename = f"{name}_{timestamp}{ext}"
+                        cached_path = os.path.join(cache_dir, cached_filename)
+                        shutil.copy2(img_path, cached_path)
+                        record['img_path'] = os.path.relpath(cached_path, self.base_dir)
+                        updated = True
+                        print(f"已更新图片路径: {os.path.basename(img_path)}")
+                    except Exception as e:
+                        print(f"更新图片路径失败: {e}")
+            
+            if updated:
+                with open(history_file, 'w', encoding='utf-8') as f:
+                    json.dump(history, f, ensure_ascii=False, indent=2)
+        
+        update_history_file(self.history_file, self.lens_cache_dir)
+        update_history_file(self.target_history_file, self.target_cache_dir)
     
     def load_history(self, filepath):
         """加载历史记录"""
